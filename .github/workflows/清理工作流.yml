@@ -1,0 +1,25 @@
+name: 清理工作流
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Runs weekly at midnight on Sunday
+  workflow_dispatch:
+
+jobs:
+  cleanup_logs:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Find and delete old workflow logs
+      run: |
+        echo "Finding workflow logs older than 7 days..."
+        find /home/runner/work/_temp/ -type f -mtime +7 -exec rm -v {} \;
+        echo "Cleanup complete."
+
+    - name: Confirm remaining logs
+      run: |
+        echo "Remaining log files:"
+        find /home/runner/work/_temp/ -type f | wc -l

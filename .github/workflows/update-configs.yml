@@ -1,0 +1,137 @@
+name: Update ProtonVPN Configs
+
+on:
+  workflow_dispatch:  # 仅手动触发
+
+jobs:
+  update-configs:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          
+          # 下载必要的依赖包
+          wget "https://github.com/ProtonVPN/python-proton-core/archive/refs/tags/v0.2.0.zip" -O python-proton-core-0.2.0.zip
+          wget "https://github.com/ProtonVPN/python-proton-vpn-logger/archive/refs/tags/v0.2.1.zip" -O python-proton-vpn-logger.0.2.1.zip
+          wget "https://github.com/ProtonVPN/python-proton-vpn-api-core/archive/refs/tags/v0.32.2.zip" -O python-proton-vpn-api-core.0.32.2.zip
+          
+          # 解压所有文件
+          unzip python-proton-core-0.2.0.zip
+          unzip python-proton-vpn-logger.0.2.1.zip
+          unzip python-proton-vpn-api-core.0.32.2.zip
+          
+          # 复制必要的文件
+          mkdir -p proton
+          cp -a python-proton-core-0.2.0/proton/* proton/
+          cp -a python-proton-vpn-logger-0.2.1/proton/* proton/
+          cp -a python-proton-vpn-api-core-0.32.2/proton/* proton/
+          
+          # 安装所需的 Python 包
+          pip install bcrypt pynacl cryptography distro jinja2 aiohttp pyopenssl python-gnupg requests
+          
+          # 清理下载的压缩包
+          rm python-proton-core-0.2.0.zip python-proton-vpn-logger.0.2.1.zip python-proton-vpn-api-core.0.32.2.zip
+          rm -rf python-proton-core-0.2.0 python-proton-vpn-logger-0.2.1 python-proton-vpn-api-core-0.32.2
+          
+      - name: Run ProtonVPN config downloader
+        id: run_script
+        continue-on-error: true
+        run: |
+          # 记录开始时间（北京时间）
+          echo "start_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+          # 运行脚本并捕获输出
+          python vpndown.py ${{ secrets.PROTONVPN_COMMAND }} 2>&1 | tee script_output.txt
+          # 记录退出状态
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          
+      - name: Install 7-Zip
+        if: steps.run_script.outputs.exit_code == 0
+        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+        
+      - name: Get Beijing time
+        if: steps.run_script.outputs.exit_code == 0
+        id: beijing_time
+        run: |
+          TZ='Asia/Shanghai' date '+%Y%m%d_%H%M%S' > beijing_time.txt
+          echo "time=$(cat beijing_time.txt)" >> $GITHUB_OUTPUT
+          
+      - name: Create encrypted archive
+        if: steps.run_script.outputs.exit_code == 0
+        run: |
+          # 将密码写入临时文件，使用 base64 编码处理特殊字符
+          echo "${{ secrets.ARCHIVE_PASSWORD }}" | base64 -d > password.txt
+          # 使用临时文件中的密码创建加密压缩包
+          ARCHIVE_NAME="protonvpn_configs_$(cat beijing_time.txt).7z"
+          7z a -p"$(cat password.txt)" -mhe=on "$ARCHIVE_NAME" protonvpn_configs/
+          # 删除密码文件
+          rm password.txt
+          
+      - name: Create releases directory
+        if: steps.run_script.outputs.exit_code == 0
+        run: mkdir -p releases
+        
+      - name: Move archive to releases
+        if: steps.run_script.outputs.exit_code == 0
+        run: mv protonvpn_configs_*.7z releases/
+        
+      - name: Upload artifact
+        if: steps.run_script.outputs.exit_code == 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: protonvpn-configs
+          path: releases/
+          retention-days: 7
+          
+      - name: Cleanup
+        if: steps.run_script.outputs.exit_code == 0
+        run: |
+          rm -rf protonvpn_configs/
+          rm -rf releases/
+          rm beijing_time.txt
+          
+      - name: Get end time
+        id: end_time
+        run: echo "end_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+          
+      - name: Send Telegram notification
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          format: html
+          message: |
+            <b>ProtonVPN 配置更新</b>
+            
+            <b>状态:</b> ${{ steps.run_script.outputs.exit_code == 0 && '✅ 成功' || '❌ 失败' }}
+            
+            <b>运行命令:</b>
+            <code>python vpndown.py ${{ secrets.PROTONVPN_COMMAND }}</code>
+            
+            <b>压缩包密码:</b>
+            <code>${{ secrets.ARCHIVE_PASSWORD }}</code>
+            
+            <b>运行时间:</b>
+            开始: <code>${{ steps.run_script.outputs.start_time }}</code>
+            结束: <code>${{ steps.end_time.outputs.end_time }}</code>
+            
+            ${{ steps.run_script.outputs.exit_code != 0 && format('
+            <b>错误信息:</b>
+            <pre>{0}</pre>
+            ', steps.run_script.outputs.error) || '' }}
+            
+            ${{ steps.run_script.outputs.exit_code == 0 && format('
+            <b>生成文件:</b>
+            <code>protonvpn_configs_{0}.7z</code>
+            ', steps.beijing_time.outputs.time) || '' }} 
